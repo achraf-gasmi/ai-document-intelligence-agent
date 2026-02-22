@@ -2,6 +2,7 @@ import streamlit as st
 import sys
 import os
 import tempfile
+import time
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from src.backend import process_document, get_history, get_dashboard_stats
@@ -33,6 +34,24 @@ st.markdown("""
         color: #cdd6f4;
     }
 
+    .agent-active {
+        background-color: #1e1e2e;
+        border: 1px solid #cba6f7;
+        border-radius: 12px;
+        padding: 16px;
+        margin: 8px 0;
+        color: #cdd6f4;
+    }
+
+    .agent-done {
+        background-color: #1e1e2e;
+        border: 1px solid #a6e3a1;
+        border-radius: 12px;
+        padding: 16px;
+        margin: 8px 0;
+        color: #cdd6f4;
+    }
+
     .risk-high   { border-left: 4px solid #f38ba8; }
     .risk-medium { border-left: 4px solid #fab387; }
     .risk-low    { border-left: 4px solid #a6e3a1; }
@@ -54,6 +73,15 @@ st.markdown("""
     .status-complete { color: #a6e3a1; font-weight: bold; }
     .status-failed   { color: #f38ba8; font-weight: bold; }
 
+    .report-section {
+        background-color: #1e1e2e;
+        border: 1px solid #313244;
+        border-radius: 12px;
+        padding: 24px;
+        color: #cdd6f4;
+        line-height: 1.7;
+    }
+
     .stTabs [data-baseweb="tab-list"] {
         background-color: #1e1e2e;
         border-radius: 12px;
@@ -65,8 +93,8 @@ st.markdown("""
 # ── Initialize session state ──────────────────────────────────────────
 if "result" not in st.session_state:
     st.session_state.result = None
-if "processing" not in st.session_state:
-    st.session_state.processing = False
+if "agent_states" not in st.session_state:
+    st.session_state.agent_states = {}
 
 # ── Header ────────────────────────────────────────────────────────────
 st.markdown("""
@@ -84,6 +112,35 @@ tab_analyze, tab_history, tab_stats = st.tabs([
     "📋 History",
     "📊 Dashboard"
 ])
+
+# ── Agent definitions ─────────────────────────────────────────────────
+AGENTS = [
+    ("⚙️", "Agent 1", "Document Processor", "Extracts text from PDF"),
+    ("📝", "Agent 2", "Summarizer",          "Generates concise summary"),
+    ("🔍", "Agent 3", "Key Info Extractor",  "Pulls dates, parties, amounts"),
+    ("⚠️", "Agent 4", "Risk Flagger",         "Identifies risks and red flags"),
+    ("📊", "Agent 5", "Report Generator",     "Creates final structured report"),
+]
+
+def render_agents(active_idx=None, done_up_to=None):
+    """Render agent pipeline with live status indicators."""
+    for i, (icon, tag, name, desc) in enumerate(AGENTS):
+        if done_up_to is not None and i < done_up_to:
+            css   = "agent-done"
+            badge = "✅"
+        elif active_idx is not None and i == active_idx:
+            css   = "agent-active"
+            badge = "🔄"
+        else:
+            css   = "agent-card"
+            badge = icon
+
+        st.markdown(f"""
+        <div class="{css}">
+            <strong>{badge} {name}</strong><br>
+            <small style="color: #6c7086;">{desc}</small>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════
 # TAB 1 — ANALYZE
@@ -104,46 +161,39 @@ with tab_analyze:
             st.markdown(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
 
             if st.button("🚀 Analyze Document", use_container_width=True):
-                # Save uploaded file temporarily
+                # Save to temp file keeping original name
                 with tempfile.NamedTemporaryFile(
                     delete=False,
-                    suffix=".pdf",
-                    prefix=uploaded_file.name.replace(".pdf", "_")
+                    suffix=".pdf"
                 ) as tmp:
                     tmp.write(uploaded_file.read())
                     tmp_path = tmp.name
 
-                with st.spinner("🤖 Multi-agent pipeline running..."):
-                    col1, col2, col3, col4, col5 = st.columns(5)
-                    col1.info("⚙️ Processing")
-                    col2.info("📝 Summarizing")
-                    col3.info("🔍 Extracting")
-                    col4.info("⚠️ Risk Analysis")
-                    col5.info("📊 Reporting")
+                st.markdown("### 🤖 Agent Pipeline")
+                agent_placeholder = st.empty()
 
-                    result = process_document(tmp_path)
-                    result["filename"] = uploaded_file.name
+                # Simulate live agent progress
+                for i in range(len(AGENTS)):
+                    with agent_placeholder.container():
+                        render_agents(active_idx=i, done_up_to=i)
+                    if i < len(AGENTS) - 1:
+                        time.sleep(0.3)
+
+                # Run the actual pipeline
+                with st.spinner(""):
+                    result = process_document(tmp_path, uploaded_file.name)
                     st.session_state.result = result
+
+                # Show all done
+                with agent_placeholder.container():
+                    render_agents(done_up_to=len(AGENTS))
 
                 os.unlink(tmp_path)
                 st.rerun()
 
         st.markdown("---")
         st.markdown("### 🤖 Agent Pipeline")
-        agents = [
-            ("⚙️ Agent 1", "Document Processor", "Extracts text from PDF"),
-            ("📝 Agent 2", "Summarizer",          "Generates concise summary"),
-            ("🔍 Agent 3", "Key Info Extractor",  "Pulls dates, parties, amounts"),
-            ("⚠️ Agent 4", "Risk Flagger",         "Identifies risks and red flags"),
-            ("📊 Agent 5", "Report Generator",     "Creates final structured report"),
-        ]
-        for icon, name, desc in agents:
-            st.markdown(f"""
-            <div class="agent-card">
-                <strong>{icon} {name}</strong><br>
-                <small style="color: #6c7086;">{desc}</small>
-            </div>
-            """, unsafe_allow_html=True)
+        render_agents()
 
     with col_result:
         if st.session_state.result:
@@ -152,11 +202,15 @@ with tab_analyze:
 
             st.markdown(f"### 📄 {result['filename']}")
             if status == "complete":
-                st.markdown('<span class="status-complete">✅ Analysis Complete</span>',
-                           unsafe_allow_html=True)
+                st.markdown(
+                    '<span class="status-complete">✅ Analysis Complete</span>',
+                    unsafe_allow_html=True
+                )
             else:
-                st.markdown('<span class="status-failed">❌ Analysis Failed</span>',
-                           unsafe_allow_html=True)
+                st.markdown(
+                    '<span class="status-failed">❌ Analysis Failed</span>',
+                    unsafe_allow_html=True
+                )
                 st.error(result.get("error", "Unknown error"))
 
             if status == "complete":
@@ -168,7 +222,10 @@ with tab_analyze:
                 ])
 
                 with res_tab1:
-                    st.markdown(result["report"])
+                    st.markdown(
+                        f'<div class="report-section">{result["report"]}</div>',
+                        unsafe_allow_html=True
+                    )
                     st.download_button(
                         label     = "⬇️ Download Report",
                         data      = result["report"],
@@ -178,42 +235,50 @@ with tab_analyze:
 
                 with res_tab2:
                     st.markdown(f"""
-                    <div class="agent-card">
+                    <div class="report-section">
                         {result['summary']}
                     </div>
                     """, unsafe_allow_html=True)
 
                 with res_tab3:
-                    st.markdown(result["key_info"])
+                    st.markdown(
+                        f'<div class="report-section">{result["key_info"]}</div>',
+                        unsafe_allow_html=True
+                    )
 
                 with res_tab4:
                     risks_text = result["risks"]
-                    # Color code risk sections
-                    if "HIGH RISK" in risks_text:
-                        high = risks_text.split("HIGH RISK")[1].split("MEDIUM")[0] if "MEDIUM" in risks_text else ""
-                        st.markdown(f"""
-                        <div class="agent-card risk-high">
-                            <strong>🔴 High Risk</strong><br>{high}
-                        </div>
-                        """, unsafe_allow_html=True)
-                    if "MEDIUM RISK" in risks_text:
-                        medium = risks_text.split("MEDIUM RISK")[1].split("LOW")[0] if "LOW" in risks_text else ""
-                        st.markdown(f"""
-                        <div class="agent-card risk-medium">
-                            <strong>🟡 Medium Risk</strong><br>{medium}
-                        </div>
-                        """, unsafe_allow_html=True)
-                    if "LOW RISK" in risks_text:
-                        low = risks_text.split("LOW RISK")[1].split("MISSING")[0] if "MISSING" in risks_text else ""
-                        st.markdown(f"""
-                        <div class="agent-card risk-low">
-                            <strong>🟢 Low Risk</strong><br>{low}
-                        </div>
-                        """, unsafe_allow_html=True)
+
+                    # Parse and color code risk sections
+                    sections = {
+                        "HIGH RISK":   ("risk-high",   "🔴 High Risk"),
+                        "MEDIUM RISK": ("risk-medium", "🟡 Medium Risk"),
+                        "LOW RISK":    ("risk-low",    "🟢 Low Risk"),
+                    }
+
+                    for key, (css, label) in sections.items():
+                        if key in risks_text:
+                            start = risks_text.find(key) + len(key)
+                            next_keys = [k for k in sections if k != key and k in risks_text[start:]]
+                            if next_keys:
+                                end = risks_text.find(next_keys[0], start)
+                                content = risks_text[start:end].strip()
+                            else:
+                                content = risks_text[start:].strip()
+
+                            st.markdown(f"""
+                            <div class="agent-card {css}">
+                                <strong>{label}</strong><br><br>
+                                {content}
+                            </div>
+                            """, unsafe_allow_html=True)
 
                     st.markdown("---")
                     st.markdown("**Full Risk Analysis:**")
-                    st.markdown(risks_text)
+                    st.markdown(
+                        f'<div class="report-section">{risks_text}</div>',
+                        unsafe_allow_html=True
+                    )
         else:
             st.markdown("""
             <div class="agent-card" style="text-align: center; padding: 60px;">
@@ -235,12 +300,17 @@ with tab_history:
         for entry in history:
             with st.expander(f"📄 {entry['filename']} — {entry['timestamp']}"):
                 status_class = "status-complete" if entry["status"] == "complete" else "status-failed"
-                st.markdown(f'<span class="{status_class}">{entry["status"].upper()}</span>',
-                           unsafe_allow_html=True)
-
+                st.markdown(
+                    f'<span class="{status_class}">{entry["status"].upper()}</span>',
+                    unsafe_allow_html=True
+                )
                 if entry["summary"]:
                     st.markdown("**Summary:**")
-                    st.markdown(entry["summary"])
+                    st.markdown(f"""
+                    <div class="report-section">
+                        {entry['summary']}
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 if entry["report"]:
                     st.download_button(

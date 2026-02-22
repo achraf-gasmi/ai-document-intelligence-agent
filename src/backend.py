@@ -8,7 +8,7 @@ from src.database import init_db, log_analysis, get_all_analyses, get_stats
 # ── Initialize DB on import ───────────────────────────────────────────
 init_db()
 
-def process_document(file_path: str) -> dict:
+def process_document(file_path: str, original_filename: str = None) -> dict:
     """
     Main entry point — runs the full multi-agent pipeline
     and logs the result to SQLite.
@@ -16,6 +16,10 @@ def process_document(file_path: str) -> dict:
     print(f"\n[Backend] Starting pipeline for: {file_path}")
 
     result = analyze_document(file_path)
+
+    # Use original filename if provided
+    if original_filename:
+        result["filename"] = original_filename
 
     # Log to SQLite
     log_analysis(
