@@ -2,12 +2,12 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from typing import TypedDict, Annotated
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import TypedDict, Optional
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
-from langchain_core.messages import HumanMessage, AIMessage
 from src.tools import (
     extract_text_from_pdf,
     store_document,
@@ -15,7 +15,7 @@ from src.tools import (
     extract_key_info,
     flag_risks,
     generate_report,
-    all_tools
+    search_document
 )
 
 load_dotenv()
@@ -35,85 +35,173 @@ class DocumentState(TypedDict):
     summary:      str
     key_info:     str
     risks:        str
+    risk_score:   int
     report:       str
+    language:     str
     status:       str
     error:        str
 
 
+# ── Language Detection ────────────────────────────────────────────────
+def detect_language(text: str) -> str:
+    """Detect document language using LLM."""
+    try:
+        prompt = f"""Detect the language of this text. 
+Return ONLY the language name in English (e.g. English, French, Arabic, Spanish).
+
+Text: {text[:500]}
+
+Language:"""
+        response = llm.invoke(prompt)
+        language = response.content.strip()
+        print(f"[Language] Detected: {language}")
+        return language
+    except Exception:
+        return "English"
+
+
 # ── Agent 1: Document Processor ───────────────────────────────────────
 def document_processor(state: DocumentState) -> DocumentState:
-    """Extracts and stores document text."""
+    """Extracts, stores document text and detects language."""
     print(f"\n[Agent 1] Processing document: {state['filename']}")
     try:
-        # Extract text
         raw_text = extract_text_from_pdf.invoke({"file_path": state["file_path"]})
 
         if raw_text.startswith("Error"):
             return {**state, "error": raw_text, "status": "failed"}
 
-        # Store in ChromaDB
         store_result = store_document.invoke({
             "file_path": state["file_path"],
             "content":   raw_text
         })
         print(f"[Agent 1] {store_result}")
 
+        # Detect language
+        language = detect_language(raw_text)
+
         return {
             **state,
             "raw_text": raw_text,
+            "language": language,
             "status":   "processed"
         }
     except Exception as e:
         return {**state, "error": str(e), "status": "failed"}
 
 
-# ── Agent 2: Summarizer ───────────────────────────────────────────────
-def summarizer_agent(state: DocumentState) -> DocumentState:
-    """Generates a concise document summary."""
-    print(f"\n[Agent 2] Summarizing document...")
+# ── Agents 2, 3, 4: Parallel Execution ───────────────────────────────
+def parallel_analysis(state: DocumentState) -> DocumentState:
+    """Run summarizer, extractor, and risk agents in parallel."""
+    print(f"\n[Parallel] Running Agents 2, 3, 4 simultaneously...")
+    raw_text = state["raw_text"]
+    language = state.get("language", "English")
+
+    def run_summarizer():
+        print("[Agent 2] Summarizing...")
+        lang_note = f" Respond in {language}." if language != "English" else ""
+        result = summarize_text.invoke({"text": raw_text + lang_note})
+        print(f"[Agent 2] Done ({len(result)} chars)")
+        return result
+
+    def run_extractor():
+        print("[Agent 3] Extracting key info...")
+        lang_note = f" Respond in {language}." if language != "English" else ""
+        result = extract_key_info.invoke({"text": raw_text + lang_note})
+        print(f"[Agent 3] Done ({len(result)} chars)")
+        return result
+
+    def run_risk():
+        print("[Agent 4] Analyzing risks...")
+        lang_note = f" Respond in {language}." if language != "English" else ""
+        result = flag_risks.invoke({"text": raw_text + lang_note})
+        print(f"[Agent 4] Done ({len(result)} chars)")
+        return result
+
+    # Run all 3 in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_summary  = executor.submit(run_summarizer)
+        future_key_info = executor.submit(run_extractor)
+        future_risks    = executor.submit(run_risk)
+
+        summary  = future_summary.result()
+        key_info = future_key_info.result()
+        risks    = future_risks.result()
+
+    print("[Parallel] All 3 agents complete!")
+
+    return {
+        **state,
+        "summary":  summary,
+        "key_info": key_info,
+        "risks":    risks,
+        "status":   "analyzed"
+    }
+
+
+# ── Risk Score Calculator ─────────────────────────────────────────────
+def calculate_risk_score(state: DocumentState) -> DocumentState:
+    """Calculate a risk score out of 100 based on risk analysis."""
+    print(f"\n[Risk Score] Calculating...")
     try:
-        summary = summarize_text.invoke({"text": state["raw_text"]})
-        print(f"[Agent 2] Summary generated ({len(summary)} chars)")
-        return {**state, "summary": summary, "status": "summarized"}
+        risks_text = state["risks"]
+        prompt = f"""Based on this risk analysis, calculate a risk score from 0 to 100.
+0 = no risk, 100 = extremely high risk.
+
+Consider:
+- Number of HIGH RISK items (each worth -15 points)
+- Number of MEDIUM RISK items (each worth -8 points)  
+- Number of LOW RISK items (each worth -3 points)
+- Number of MISSING sections (each worth -5 points)
+
+Start from 100 and subtract points for each issue found.
+Return ONLY a number between 0 and 100, nothing else.
+
+Risk Analysis:
+{risks_text}
+
+Score:"""
+        response   = llm.invoke(prompt)
+        score_text = response.content.strip()
+
+        # Extract number safely
+        score = int(''.join(filter(str.isdigit, score_text))[:2] or "50")
+        score = max(0, min(100, score))
+
+        print(f"[Risk Score] Score: {score}/100")
+        return {**state, "risk_score": score}
     except Exception as e:
-        return {**state, "error": str(e), "status": "failed"}
-
-
-# ── Agent 3: Key Info Extractor ───────────────────────────────────────
-def extractor_agent(state: DocumentState) -> DocumentState:
-    """Extracts key information from the document."""
-    print(f"\n[Agent 3] Extracting key information...")
-    try:
-        key_info = extract_key_info.invoke({"text": state["raw_text"]})
-        print(f"[Agent 3] Key info extracted ({len(key_info)} chars)")
-        return {**state, "key_info": key_info, "status": "extracted"}
-    except Exception as e:
-        return {**state, "error": str(e), "status": "failed"}
-
-
-# ── Agent 4: Risk Flagger ─────────────────────────────────────────────
-def risk_agent(state: DocumentState) -> DocumentState:
-    """Identifies risks and red flags in the document."""
-    print(f"\n[Agent 4] Analyzing risks...")
-    try:
-        risks = flag_risks.invoke({"text": state["raw_text"]})
-        print(f"[Agent 4] Risk analysis complete ({len(risks)} chars)")
-        return {**state, "risks": risks, "status": "analyzed"}
-    except Exception as e:
-        return {**state, "error": str(e), "status": "failed"}
+        print(f"[Risk Score] Error: {e}")
+        return {**state, "risk_score": 50}
 
 
 # ── Agent 5: Report Generator ─────────────────────────────────────────
 def report_agent(state: DocumentState) -> DocumentState:
     """Combines all analysis into a final report."""
     print(f"\n[Agent 5] Generating final report...")
+    language = state.get("language", "English")
     try:
-        report = generate_report.invoke({
-            "summary":  state["summary"],
-            "key_info": state["key_info"],
-            "risks":    state["risks"],
-            "filename": state["filename"]
-        })
+        lang_note = f"\nIMPORTANT: Write the entire report in {language}." if language != "English" else ""
+
+        prompt = f"""Create a professional document analysis report based on the following:
+
+SUMMARY:
+{state['summary']}
+
+KEY INFORMATION:
+{state['key_info']}
+
+RISK ANALYSIS:
+{state['risks']}
+
+RISK SCORE: {state['risk_score']}/100
+
+Format as a clean, professional report with clear sections.
+Document: {state['filename']}
+{lang_note}
+
+Report:"""
+        response = llm.invoke(prompt)
+        report   = response.content.strip()
         print(f"[Agent 5] Report generated ({len(report)} chars)")
         return {**state, "report": report, "status": "complete"}
     except Exception as e:
@@ -135,32 +223,26 @@ def build_pipeline():
 
     # Add nodes
     graph.add_node("document_processor", document_processor)
-    graph.add_node("summarizer",          summarizer_agent)
-    graph.add_node("extractor",           extractor_agent)
-    graph.add_node("risk_analyzer",       risk_agent)
-    graph.add_node("report_generator",    report_agent)
+    graph.add_node("parallel_analysis",  parallel_analysis)
+    graph.add_node("risk_score",         calculate_risk_score)
+    graph.add_node("report_generator",   report_agent)
 
     # Entry point
     graph.set_entry_point("document_processor")
 
-    # Edges with failure routing
+    # Edges
     graph.add_conditional_edges(
         "document_processor",
         should_continue,
-        {"continue": "summarizer", END: END}
+        {"continue": "parallel_analysis", END: END}
     )
     graph.add_conditional_edges(
-        "summarizer",
+        "parallel_analysis",
         should_continue,
-        {"continue": "extractor", END: END}
+        {"continue": "risk_score", END: END}
     )
     graph.add_conditional_edges(
-        "extractor",
-        should_continue,
-        {"continue": "risk_analyzer", END: END}
-    )
-    graph.add_conditional_edges(
-        "risk_analyzer",
+        "risk_score",
         should_continue,
         {"continue": "report_generator", END: END}
     )
@@ -173,6 +255,39 @@ def build_pipeline():
 pipeline = build_pipeline()
 
 
+# ── Q&A Mode ─────────────────────────────────────────────────────────
+def answer_question(question: str, filename: str, language: str = "English") -> str:
+    """Answer a question about an already-analyzed document."""
+    print(f"\n[Q&A] Question: {question}")
+    try:
+        # Search ChromaDB for relevant sections
+        context = search_document.invoke({
+            "query":    question,
+            "filename": filename
+        })
+
+        lang_note = f"Answer in {language}." if language != "English" else ""
+
+        prompt = f"""You are a document analysis assistant.
+Answer the question based ONLY on the document content provided.
+If the answer is not in the document, say so clearly.
+Be concise and specific. {lang_note}
+
+Document: {filename}
+Question: {question}
+
+Relevant document sections:
+{context}
+
+Answer:"""
+        response = llm.invoke(prompt)
+        answer   = response.content.strip()
+        print(f"[Q&A] Answer generated ({len(answer)} chars)")
+        return answer
+    except Exception as e:
+        return f"Error answering question: {e}"
+
+
 # ── Main entry point ──────────────────────────────────────────────────
 def analyze_document(file_path: str) -> dict:
     """Run the full multi-agent pipeline on a document."""
@@ -182,39 +297,44 @@ def analyze_document(file_path: str) -> dict:
     print(f"{'='*50}")
 
     initial_state = DocumentState(
-        file_path = file_path,
-        filename  = filename,
-        raw_text  = "",
-        summary   = "",
-        key_info  = "",
-        risks     = "",
-        report    = "",
-        status    = "starting",
-        error     = ""
+        file_path  = file_path,
+        filename   = filename,
+        raw_text   = "",
+        summary    = "",
+        key_info   = "",
+        risks      = "",
+        risk_score = 0,
+        report     = "",
+        language   = "English",
+        status     = "starting",
+        error      = ""
     )
 
     result = pipeline.invoke(initial_state)
 
     return {
-        "filename": result["filename"],
-        "summary":  result["summary"],
-        "key_info": result["key_info"],
-        "risks":    result["risks"],
-        "report":   result["report"],
-        "status":   result["status"],
-        "error":    result.get("error", "")
+        "filename":   result["filename"],
+        "summary":    result["summary"],
+        "key_info":   result["key_info"],
+        "risks":      result["risks"],
+        "risk_score": result.get("risk_score", 0),
+        "report":     result["report"],
+        "language":   result.get("language", "English"),
+        "status":     result["status"],
+        "error":      result.get("error", "")
     }
 
 
 # ── Test ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) > 1:
         result = analyze_document(sys.argv[1])
         print(f"\n{'='*50}")
         print("FINAL REPORT:")
         print(f"{'='*50}")
         print(result["report"])
-        print(f"\nStatus: {result['status']}")
+        print(f"\nStatus:     {result['status']}")
+        print(f"Language:   {result['language']}")
+        print(f"Risk Score: {result['risk_score']}/100")
     else:
         print("Usage: python src/agents.py <path_to_pdf>")

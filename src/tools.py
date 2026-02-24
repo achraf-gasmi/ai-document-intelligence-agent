@@ -3,10 +3,18 @@ import fitz  # PyMuPDF
 import pdfplumber
 from langchain_core.tools import tool
 from langchain_chroma import Chroma
-from langchain_ollama import OllamaEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.documents import Document
 from dotenv import load_dotenv
+
+import warnings
+warnings.filterwarnings("ignore")
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
+    model_kwargs={"device": "cpu"}
+)
 
 load_dotenv()
 
@@ -17,7 +25,9 @@ llm = ChatGroq(
     temperature=0.3
 )
 
-embeddings = OllamaEmbeddings(model="qwen3-embedding:8b")
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
 
 # ── ChromaDB ──────────────────────────────────────────────────────────
 vectorstore = Chroma(
