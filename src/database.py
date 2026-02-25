@@ -19,7 +19,9 @@ def init_db():
             summary     TEXT,
             key_info    TEXT,
             risks       TEXT,
+            risk_score  INTEGER DEFAULT 0,
             report      TEXT,
+            language    TEXT DEFAULT 'English',
             error       TEXT,
             char_count  INTEGER
         )
@@ -30,15 +32,17 @@ def init_db():
     print("[DB] Database initialized.")
 
 
-def log_analysis(filename, status, summary, key_info, risks, report, error=""):
+def log_analysis(filename, status, summary, key_info, risks, report,
+                 risk_score=0, language="English", error=""):
     """Log a document analysis to SQLite."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     cursor.execute("""
         INSERT INTO analyses
-        (timestamp, filename, status, summary, key_info, risks, report, error, char_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (timestamp, filename, status, summary, key_info, risks,
+         risk_score, report, language, error, char_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         filename,
@@ -46,7 +50,9 @@ def log_analysis(filename, status, summary, key_info, risks, report, error=""):
         summary,
         key_info,
         risks,
+        risk_score,
         report,
+        language,
         error,
         len(report) if report else 0
     ))
@@ -95,13 +101,30 @@ def get_stats():
     cursor.execute("SELECT COUNT(*) FROM analyses WHERE status = 'failed'")
     failed = cursor.fetchone()[0]
 
-    cursor.execute("SELECT filename FROM analyses ORDER BY timestamp DESC LIMIT 5")
-    recent = [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT AVG(risk_score) FROM analyses WHERE status = 'complete'")
+    avg_risk = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+        SELECT filename, risk_score, language, timestamp
+        FROM analyses
+        ORDER BY timestamp DESC
+        LIMIT 5
+    """)
+    recent = [
+        {
+            "filename":   row[0],
+            "risk_score": row[1],
+            "language":   row[2],
+            "timestamp":  row[3]
+        }
+        for row in cursor.fetchall()
+    ]
 
     conn.close()
     return {
         "total":      total,
         "successful": successful,
         "failed":     failed,
+        "avg_risk":   round(avg_risk, 1),
         "recent":     recent
     }

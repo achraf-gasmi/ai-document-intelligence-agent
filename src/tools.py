@@ -6,10 +6,13 @@ from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 from langchain_core.documents import Document
 from dotenv import load_dotenv
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 import warnings
+import logging
 warnings.filterwarnings("ignore")
-from langchain_community.embeddings import HuggingFaceEmbeddings
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
 
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2",
@@ -62,7 +65,13 @@ def store_document(file_path: str, content: str) -> str:
     """Store document content in ChromaDB for semantic search."""
     try:
         filename = os.path.basename(file_path)
-        # Split into chunks of 1000 chars with 200 overlap
+
+        # Check if document already exists
+        existing = vectorstore.get(where={"source": filename})
+        if existing and len(existing["ids"]) > 0:
+            print(f"[Tool] Document {filename} already in ChromaDB, skipping.")
+            return f"Document {filename} already stored — skipping."
+
         chunk_size = 1000
         overlap    = 200
         chunks     = []
@@ -107,11 +116,12 @@ def search_document(query: str, filename: str = None) -> str:
 
 # ── Tool 4: Summarize text ────────────────────────────────────────────
 @tool
-def summarize_text(text: str) -> str:
+def summarize_text(text: str, language: str = "English") -> str:
     """Generate a concise summary of the provided text."""
     try:
+        lang_note = f"\nIMPORTANT: Respond entirely in {language}." if language != "English" else ""
         prompt = f"""Summarize the following document concisely in 3-5 sentences.
-Focus on the main purpose, key parties involved, and core terms.
+Focus on the main purpose, key parties involved, and core terms.{lang_note}
 
 Document:
 {text[:4000]}
@@ -125,9 +135,10 @@ Summary:"""
 
 # ── Tool 5: Extract key information ──────────────────────────────────
 @tool
-def extract_key_info(text: str) -> str:
+def extract_key_info(text: str, language: str = "English") -> str:
     """Extract key information like dates, parties, amounts, and clauses."""
     try:
+        lang_note = f"\nIMPORTANT: Respond entirely in {language}." if language != "English" else ""
         prompt = f"""Extract the following key information from this document.
 Return as a structured list:
 
@@ -138,6 +149,7 @@ Return as a structured list:
 - Key Clauses/Terms:
 - Obligations:
 - Duration/Validity:
+{lang_note}
 
 Document:
 {text[:4000]}
@@ -151,16 +163,18 @@ Extracted Information:"""
 
 # ── Tool 6: Flag risks ────────────────────────────────────────────────
 @tool
-def flag_risks(text: str) -> str:
+def flag_risks(text: str, language: str = "English") -> str:
     """Identify potential risks, red flags, and missing sections."""
     try:
+        lang_note = f"\nIMPORTANT: Respond entirely in {language}." if language != "English" else ""
         prompt = f"""Analyze this document for potential risks and issues.
 Identify and list:
 
 🔴 HIGH RISK — Critical issues that need immediate attention
-🟡 MEDIUM RISK — Issues that should be reviewed carefully  
+🟡 MEDIUM RISK — Issues that should be reviewed carefully
 🟢 LOW RISK — Minor concerns or suggestions
 ⚠️ MISSING — Important sections or clauses that are absent
+{lang_note}
 
 Document:
 {text[:4000]}
@@ -170,7 +184,6 @@ Risk Analysis:"""
         return response.content.strip()
     except Exception as e:
         return f"Error flagging risks: {e}"
-
 
 # ── Tool 7: Generate report ───────────────────────────────────────────
 @tool
