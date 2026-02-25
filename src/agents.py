@@ -271,7 +271,12 @@ def answer_question(question: str, filename: str, language: str = "English") -> 
     """Answer a question about an already-analyzed document."""
     print(f"\n[Q&A] Question: {question}")
     try:
-        context   = search_document.invoke({"query": question, "filename": None})
+        # Search without filename filter
+        context = search_document.invoke({
+            "query":    question,
+            "filename": ""  # empty string instead of None
+        })
+
         lang_note = f"Answer in {language}." if language != "English" else ""
         prompt    = f"""You are a document analysis assistant.
 Answer the question based ONLY on the document content provided.

@@ -96,7 +96,7 @@ def store_document(file_path: str, content: str) -> str:
 
 # ── Tool 3: Search document ───────────────────────────────────────────
 @tool
-def search_document(query: str, filename: str = None) -> str:
+def search_document(query: str, filename: str = "") -> str:
     """Search for relevant sections in stored documents."""
     try:
         results = vectorstore.similarity_search(
@@ -112,7 +112,6 @@ def search_document(query: str, filename: str = None) -> str:
         return combined
     except Exception as e:
         return f"Error searching document: {e}"
-
 
 # ── Tool 4: Summarize text ────────────────────────────────────────────
 @tool
