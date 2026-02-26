@@ -159,9 +159,10 @@ def render_agents(active_idx=None, done_up_to=None):
         """, unsafe_allow_html=True)
 
 def get_risk_color(score):
-    if score >= 70: return "risk-score-high",   "🔴 High Risk"
-    if score >= 40: return "risk-score-medium",  "🟡 Medium Risk"
-    return "risk-score-low", "🟢 Low Risk"
+    if score <= 20:  return "risk-score-low",    "🟢 Low Risk"
+    if score <= 50:  return "risk-score-medium",  "🟡 Medium Risk"
+    if score <= 80:  return "risk-score-high",    "🔴 High Risk"
+    return "risk-score-high", "⛔ Critical Risk"
 
 def export_to_pdf(result: dict) -> bytes:
     """Generate a PDF report."""
@@ -268,14 +269,16 @@ with tab_analyze:
 
             with col_score:
                 if status == "complete":
-                    score      = result.get("risk_score", 0)
-                    css, label = get_risk_color(score)
+                    score         = result.get("risk_score", 0)
+                    reasoning     = result.get("risk_reasoning", "")
+                    css, label    = get_risk_color(score)
                     st.markdown(f"""
                     <div class="metric-card">
                         <small>Risk Score</small>
                         <span class="{css}">{score}</span>
                         <small>/100</small><br>
-                        <small>{label}</small>
+                        <small>{label}</small><br>
+                        <small style="color:#6c7086; font-size:0.75em;">{reasoning}</small>
                     </div>
                     """, unsafe_allow_html=True)
 

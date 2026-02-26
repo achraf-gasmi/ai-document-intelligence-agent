@@ -37,6 +37,7 @@ class DocumentState(TypedDict):
     key_info:            str
     risks:               str
     risk_score:          int
+    risk_reasoning:      str      # ← add this
     report:              str
     language:            str
     suggested_questions: list
@@ -135,26 +136,58 @@ def parallel_analysis(state: DocumentState) -> DocumentState:
     }
 
 
-# ── Risk Score Calculator ─────────────────────────────────────────────
+
+# ── Risk Score Calculator (Smart) ─────────────────────────────────────
 def calculate_risk_score(state: DocumentState) -> DocumentState:
-    """Calculate a risk score out of 100 based on risk analysis."""
-    print(f"\n[Risk Score] Calculating...")
+    """Smart context-aware risk scoring using LLM."""
+    print(f"\n[Risk Score] Calculating smart score...")
     try:
-        risks_text    = state["risks"]
-        high_count    = risks_text.upper().count("HIGH RISK")
-        medium_count  = risks_text.upper().count("MEDIUM RISK")
-        low_count     = risks_text.upper().count("LOW RISK")
-        missing_count = risks_text.upper().count("MISSING")
+        prompt = f"""You are a document risk assessment expert.
+Analyze this document and assign a RISK score from 0 to 100.
 
-        deductions = (high_count * 15) + (medium_count * 8) + (low_count * 3) + (missing_count * 5)
-        score      = max(0, min(100, 100 - deductions))
+IMPORTANT RULES:
+- The score represents DANGER level — higher score = MORE dangerous/risky
+- Consider the DOCUMENT TYPE first:
+  * Certificate, award, informational document → score 0-10 (very low risk)
+  * Well-structured resume/CV → score 10-25 (low risk)
+  * Complete contract with minor issues → score 25-45 (moderate risk)
+  * Contract with several missing clauses → score 45-65 (high risk)
+  * Contract with critical missing sections → score 65-85 (very high risk)
+  * Dangerous or critically incomplete legal document → score 85-100 (extreme risk)
 
-        print(f"[Risk Score] High:{high_count} Medium:{medium_count} Low:{low_count} Missing:{missing_count}")
-        print(f"[Risk Score] Deductions:{deductions} Score:{score}/100")
-        return {**state, "risk_score": score}
+SCORING GUIDE:
+- 0-20:   🟢 Low Risk — safe document, no legal obligations
+- 21-50:  🟡 Medium Risk — some concerns worth reviewing
+- 51-80:  🔴 High Risk — significant issues need attention
+- 81-100: ⛔ Critical Risk — immediate action required
+
+Document Type Context:
+- Filename: {state['filename']}
+- Summary: {state['summary'][:500]}
+- Risk Analysis: {state['risks'][:1000]}
+
+Return ONLY a JSON object like this:
+{{"score": 8, "reasoning": "This is a certificate with no legal obligations or risks."}}
+
+JSON:"""
+
+        response = llm.invoke(prompt)
+        content  = response.content.strip()
+
+        match = re.search(r'\{.*?\}', content, re.DOTALL)
+        if match:
+            data      = json.loads(match.group())
+            score     = int(data.get("score", 50))
+            reasoning = data.get("reasoning", "")
+            score     = max(0, min(100, score))
+            print(f"[Risk Score] Score: {score}/100 — {reasoning}")
+            return {**state, "risk_score": score, "risk_reasoning": reasoning}
+
+        return {**state, "risk_score": 50, "risk_reasoning": "Could not calculate score"}
+
     except Exception as e:
         print(f"[Risk Score] Error: {e}")
-        return {**state, "risk_score": 50}
+        return {**state, "risk_score": 50, "risk_reasoning": "Error calculating score"}
 
 
 # ── Agent 5: Report Generator ─────────────────────────────────────────
@@ -312,6 +345,7 @@ def analyze_document(file_path: str) -> dict:
         key_info            = "",
         risks               = "",
         risk_score          = 0,
+        risk_reasoning      = "",      # ← add this
         report              = "",
         language            = "English",
         suggested_questions = [],
@@ -322,16 +356,17 @@ def analyze_document(file_path: str) -> dict:
     result = pipeline.invoke(initial_state)
 
     return {
-        "filename":           result["filename"],
-        "summary":            result["summary"],
-        "key_info":           result["key_info"],
-        "risks":              result["risks"],
-        "risk_score":         result.get("risk_score", 0),
-        "report":             result["report"],
-        "language":           result.get("language", "English"),
+        "filename":            result["filename"],
+        "summary":             result["summary"],
+        "key_info":            result["key_info"],
+        "risks":               result["risks"],
+        "risk_score":          result.get("risk_score", 0),
+        "risk_reasoning":      result.get("risk_reasoning", ""),   # ← add this
+        "report":              result["report"],
+        "language":            result.get("language", "English"),
         "suggested_questions": result.get("suggested_questions", []),
-        "status":             result["status"],
-        "error":              result.get("error", "")
+        "status":              result["status"],
+        "error":               result.get("error", "")
     }
 
 
