@@ -4,6 +4,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import re
+import difflib
 from concurrent.futures import ThreadPoolExecutor
 from typing import TypedDict
 from dotenv import load_dotenv
@@ -28,6 +29,11 @@ llm = ChatGroq(
     temperature=0.3
 )
 
+
+# ══════════════════════════════════════════════════════════════════════
+# ANALYSIS PIPELINE
+# ══════════════════════════════════════════════════════════════════════
+
 # ── State ─────────────────────────────────────────────────────────────
 class DocumentState(TypedDict):
     file_path:           str
@@ -37,7 +43,7 @@ class DocumentState(TypedDict):
     key_info:            str
     risks:               str
     risk_score:          int
-    risk_reasoning:      str      # ← add this
+    risk_reasoning:      str
     report:              str
     language:            str
     suggested_questions: list
@@ -134,7 +140,6 @@ def parallel_analysis(state: DocumentState) -> DocumentState:
         "risks":    risks,
         "status":   "analyzed"
     }
-
 
 
 # ── Risk Score Calculator (Smart) ─────────────────────────────────────
@@ -304,10 +309,9 @@ def answer_question(question: str, filename: str, language: str = "English") -> 
     """Answer a question about an already-analyzed document."""
     print(f"\n[Q&A] Question: {question}")
     try:
-        # Search without filename filter
         context = search_document.invoke({
             "query":    question,
-            "filename": ""  # empty string instead of None
+            "filename": ""
         })
 
         lang_note = f"Answer in {language}." if language != "English" else ""
@@ -345,7 +349,7 @@ def analyze_document(file_path: str) -> dict:
         key_info            = "",
         risks               = "",
         risk_score          = 0,
-        risk_reasoning      = "",      # ← add this
+        risk_reasoning      = "",
         report              = "",
         language            = "English",
         suggested_questions = [],
@@ -357,11 +361,12 @@ def analyze_document(file_path: str) -> dict:
 
     return {
         "filename":            result["filename"],
+        "raw_text":            result["raw_text"],        # ← required by improve_document()
         "summary":             result["summary"],
         "key_info":            result["key_info"],
         "risks":               result["risks"],
         "risk_score":          result.get("risk_score", 0),
-        "risk_reasoning":      result.get("risk_reasoning", ""),   # ← add this
+        "risk_reasoning":      result.get("risk_reasoning", ""),
         "report":              result["report"],
         "language":            result.get("language", "English"),
         "suggested_questions": result.get("suggested_questions", []),
@@ -370,7 +375,438 @@ def analyze_document(file_path: str) -> dict:
     }
 
 
-# ── Test ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+# IMPROVEMENT PIPELINE
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Improvement State ─────────────────────────────────────────────────
+class ImprovementState(TypedDict):
+    # ── Carried over from analysis ──
+    file_path:            str
+    filename:             str
+    raw_text:             str
+    summary:              str
+    key_info:             str
+    risks:                str
+    risk_score:           int
+    risk_reasoning:       str
+    report:               str
+    language:             str
+    suggested_questions:  list
+    status:               str
+    error:                str
+
+    # ── Improvement-specific ──
+    doc_type:             str   # Resume/CV | Legal Contract | Report | Certificate
+    critique:             str   # structured critique from Critique Agent
+    improved_text:        str   # full rewritten document (updated each iteration)
+    diff_markers:         str   # [ADDED]/[REMOVED] annotated diff
+    iteration:            int   # current loop count (1–3)
+    improvement_score:    int   # verifier score (0–100, higher = better quality)
+    improvement_history:  list  # list of dicts, one per completed iteration
+    final_text:           str   # best accepted version
+    improvement_status:   str   # "improving" | "done" | "failed"
+
+
+# ── Doc Type Detector ─────────────────────────────────────────────────
+def detect_document_type(state: ImprovementState) -> ImprovementState:
+    """Classify document type to guide all downstream improvement agents."""
+    print(f"\n[DocType] Detecting document type for: {state['filename']}")
+    try:
+        prompt = f"""Classify this document into exactly ONE of these types:
+- Resume/CV
+- Legal Contract
+- Report
+- Certificate
+
+Consider the filename and content carefully.
+Return ONLY the type name, nothing else.
+
+Filename: {state['filename']}
+Content preview:
+{state['raw_text'][:1000]}
+
+Type:"""
+        response = llm.invoke(prompt)
+        doc_type = response.content.strip()
+
+        known    = ["Resume/CV", "Legal Contract", "Report", "Certificate"]
+        doc_type = next((t for t in known if t.lower() in doc_type.lower()), "Report")
+
+        print(f"[DocType] Detected: {doc_type}")
+        return {**state, "doc_type": doc_type, "improvement_status": "improving"}
+    except Exception as e:
+        return {**state, "doc_type": "Report", "error": str(e)}
+
+
+# ── Critique Agent ────────────────────────────────────────────────────
+DOC_TYPE_CRITIQUE_RULES = {
+    "Resume/CV": """
+- Missing or weak sections (Summary, Skills, Experience, Education, Achievements)
+- Vague bullet points without metrics or impact (e.g. "helped team" → "led team of 5, increased X by 30%")
+- Missing ATS keywords for the target industry
+- Poor formatting or missing dates
+- Spelling/grammar issues
+""",
+    "Legal Contract": """
+- Missing essential clauses (payment terms, termination, liability, dispute resolution, governing law)
+- Ambiguous or undefined terms
+- One-sided or unbalanced obligations
+- Missing party details or signatures section
+- Unclear deliverables or deadlines
+""",
+    "Report": """
+- Missing executive summary or conclusion
+- Unsupported claims without data or citations
+- Poor logical flow between sections
+- Missing recommendations or action items
+- Vague or undefined scope
+""",
+    "Certificate": """
+- Missing authenticity markers (issuer details, date, signature fields)
+- Incomplete recipient information
+- Unclear achievement or scope of certification
+- Missing validity period or expiry
+- Unprofessional language or formatting
+"""
+}
+
+def critique_agent(state: ImprovementState) -> ImprovementState:
+    """Produce structured, doc-type-aware critique. Critiques improved_text on iterations > 1."""
+    iteration = state.get("iteration", 0) + 1
+    print(f"\n[Critique Agent] Round {iteration} — doc type: {state['doc_type']}")
+
+    text_to_critique = state.get("improved_text") or state["raw_text"]
+    rules = DOC_TYPE_CRITIQUE_RULES.get(state["doc_type"], DOC_TYPE_CRITIQUE_RULES["Report"])
+
+    try:
+        prompt = f"""You are an expert {state['doc_type']} reviewer.
+Perform a detailed, structured critique of this document.
+
+Document Type: {state['doc_type']}
+Iteration: {iteration}/3
+
+Focus specifically on these issues for this document type:
+{rules}
+
+For EACH problem found, provide:
+1. SECTION: Which section/part has the issue
+2. PROBLEM: What exactly is wrong (be specific)
+3. SEVERITY: Critical / Major / Minor
+4. FIX: Exact instruction for how to fix it
+
+Format your response as a numbered list of issues.
+Be specific — reference actual text from the document.
+If the document is already excellent, say "NO ISSUES FOUND" and explain why.
+
+Document:
+{text_to_critique[:4000]}
+
+Critique:"""
+
+        response = llm.invoke(prompt)
+        critique = response.content.strip()
+        print(f"[Critique Agent] Done ({len(critique)} chars)")
+        return {**state, "critique": critique, "iteration": iteration}
+    except Exception as e:
+        return {**state, "error": str(e), "improvement_status": "failed"}
+
+
+# ── Improvement Agent ─────────────────────────────────────────────────
+DOC_TYPE_IMPROVE_RULES = {
+    "Resume/CV":      "Strengthen bullet points with metrics, add missing sections, improve ATS keywords, ensure professional tone.",
+    "Legal Contract": "Add missing clauses, clarify ambiguous terms, balance obligations, ensure all parties and dates are defined.",
+    "Report":         "Add executive summary/conclusion if missing, support claims with data placeholders, improve logical flow, add recommendations.",
+    "Certificate":    "Add issuer details, recipient info, validity period, professional language, and authenticity markers."
+}
+
+def improvement_agent(state: ImprovementState) -> ImprovementState:
+    """Rewrite and fix the document based on the critique. Updates improved_text each round."""
+    print(f"\n[Improvement Agent] Round {state['iteration']} — applying fixes...")
+
+    text_to_improve = state.get("improved_text") or state["raw_text"]
+    improve_rules   = DOC_TYPE_IMPROVE_RULES.get(state["doc_type"], DOC_TYPE_IMPROVE_RULES["Report"])
+
+    try:
+        prompt = f"""You are an expert {state['doc_type']} writer and editor.
+Your task: Rewrite and improve this document based on the critique below.
+
+Document Type: {state['doc_type']}
+Improvement Rules: {improve_rules}
+
+CRITIQUE TO ADDRESS:
+{state['critique']}
+
+INSTRUCTIONS:
+1. Fix ALL Critical and Major issues identified in the critique
+2. Preserve the original structure where it is already good
+3. Keep the same language ({state.get('language', 'English')})
+4. Mark every section you changed with [IMPROVED] at the start of that section
+5. Output the COMPLETE improved document — not just the changed parts
+
+Original Document:
+{text_to_improve[:4000]}
+
+Improved Document:"""
+
+        response      = llm.invoke(prompt)
+        improved_text = response.content.strip()
+        diff_markers  = generate_diff_markers(text_to_improve, improved_text)
+
+        print(f"[Improvement Agent] Done ({len(improved_text)} chars)")
+        return {**state, "improved_text": improved_text, "diff_markers": diff_markers}
+    except Exception as e:
+        return {**state, "error": str(e), "improvement_status": "failed"}
+
+
+# ── Diff Generator ────────────────────────────────────────────────────
+def generate_diff_markers(original: str, improved: str) -> str:
+    """Generate a human-readable [ADDED]/[REMOVED] diff between two texts."""
+    original_lines = original.splitlines(keepends=True)
+    improved_lines = improved.splitlines(keepends=True)
+
+    diff = difflib.unified_diff(
+        original_lines,
+        improved_lines,
+        fromfile="Original",
+        tofile="Improved",
+        lineterm=""
+    )
+
+    diff_output = []
+    for line in diff:
+        if line.startswith("+++") or line.startswith("---"):
+            diff_output.append(line)
+        elif line.startswith("+"):
+            diff_output.append(f"[ADDED]    {line[1:].strip()}")
+        elif line.startswith("-"):
+            diff_output.append(f"[REMOVED]  {line[1:].strip()}")
+        elif line.startswith("@@"):
+            diff_output.append("\n--- Section ---")
+
+    return "\n".join(diff_output) if diff_output else "No structural changes detected."
+
+
+# ── Verifier Agent ────────────────────────────────────────────────────
+def verifier_agent(state: ImprovementState) -> ImprovementState:
+    """Score the improved document quality (0–100). Appends result to improvement_history."""
+    print(f"\n[Verifier] Round {state['iteration']} — scoring improved document...")
+    try:
+        prompt = f"""You are a strict document quality assessor.
+Score this {state['doc_type']} on how GOOD and COMPLETE it is (0–100).
+
+SCORING GUIDE (higher = better quality):
+- 0–30:   Poor — major sections missing, many critical issues
+- 31–60:  Below average — several significant problems remain
+- 61–84:  Acceptable — minor issues, could still be improved
+- 85–100: Excellent — professional quality, ready to use
+
+Document Type: {state['doc_type']}
+Previous Risk Score: {state.get('risk_score', 50)}/100 (lower was better before)
+Critique that was addressed: {state['critique'][:500]}
+
+Evaluate the improved document now:
+{state['improved_text'][:3000]}
+
+Return ONLY JSON like:
+{{"score": 87, "verdict": "Document is now professional quality. All critical issues resolved.", "remaining_issues": "Minor: could add more metrics to bullet point 3."}}
+
+JSON:"""
+
+        response = llm.invoke(prompt)
+        content  = response.content.strip()
+
+        match = re.search(r'\{.*?\}', content, re.DOTALL)
+        if match:
+            data      = json.loads(match.group())
+            score     = max(0, min(100, int(data.get("score", 50))))
+            verdict   = data.get("verdict", "")
+            remaining = data.get("remaining_issues", "")
+
+            print(f"[Verifier] Score: {score}/100 — {verdict}")
+
+            history = state.get("improvement_history", [])
+            history.append({
+                "iteration":     state["iteration"],
+                "score":         score,
+                "critique":      state["critique"],
+                "improved_text": state["improved_text"],
+                "diff_markers":  state.get("diff_markers", ""),
+                "verdict":       verdict,
+                "remaining":     remaining
+            })
+
+            return {
+                **state,
+                "improvement_score":   score,
+                "improvement_history": history
+            }
+
+        return {**state, "improvement_score": 50}
+
+    except Exception as e:
+        print(f"[Verifier] Error: {e}")
+        return {**state, "improvement_score": 50, "error": str(e)}
+
+
+# ── Finalizer ─────────────────────────────────────────────────────────
+def finalizer(state: ImprovementState) -> ImprovementState:
+    """Select the best-scoring version from history as the final output."""
+    print(f"\n[Finalizer] Wrapping up after {state['iteration']} iteration(s)...")
+
+    history = state.get("improvement_history", [])
+    if history:
+        best        = max(history, key=lambda x: x["score"])
+        final_text  = best["improved_text"]
+        final_score = best["score"]
+    else:
+        final_text  = state.get("improved_text", state["raw_text"])
+        final_score = state.get("improvement_score", 0)
+
+    print(f"[Finalizer] Best score achieved: {final_score}/100")
+    return {**state, "final_text": final_text, "improvement_status": "done"}
+
+
+# ── Loop Router ───────────────────────────────────────────────────────
+def should_loop(state: ImprovementState) -> str:
+    """
+    Route decision after each verifier pass:
+      - score >= 85      → finalize (target reached)
+      - iteration >= 3   → finalize (max iterations)
+      - otherwise        → loop back to critique_agent
+    """
+    score     = state.get("improvement_score", 0)
+    iteration = state.get("iteration", 0)
+    status    = state.get("improvement_status", "improving")
+
+    if status == "failed":
+        print(f"[Router] Pipeline failed — finalizing.")
+        return "finalize"
+
+    if score >= 85:
+        print(f"[Router] ✅ Score {score}/100 — target reached! Finalizing.")
+        return "finalize"
+
+    if iteration >= 3:
+        print(f"[Router] ⚠️ Max iterations (3) reached with score {score}/100. Finalizing best version.")
+        return "finalize"
+
+    print(f"[Router] 🔄 Score {score}/100 < 85, iteration {iteration}/3 — looping back.")
+    return "loop"
+
+
+# ── Build Improvement Pipeline ────────────────────────────────────────
+def build_improvement_pipeline():
+    graph = StateGraph(ImprovementState)
+
+    graph.add_node("detect_doc_type",   detect_document_type)
+    graph.add_node("critique_agent",    critique_agent)
+    graph.add_node("improvement_agent", improvement_agent)
+    graph.add_node("verifier_agent",    verifier_agent)
+    graph.add_node("finalizer",         finalizer)
+
+    graph.set_entry_point("detect_doc_type")
+
+    graph.add_edge("detect_doc_type",   "critique_agent")
+    graph.add_edge("critique_agent",    "improvement_agent")
+    graph.add_edge("improvement_agent", "verifier_agent")
+
+    graph.add_conditional_edges(
+        "verifier_agent",
+        should_loop,
+        {
+            "loop":     "critique_agent",  # back to critique with updated improved_text
+            "finalize": "finalizer"
+        }
+    )
+
+    graph.add_edge("finalizer", END)
+
+    return graph.compile()
+
+
+# ── Pipeline Instance ─────────────────────────────────────────────────
+improvement_pipeline = build_improvement_pipeline()
+
+
+# ── Public Entry Point ────────────────────────────────────────────────
+def improve_document(file_path: str, existing_analysis: dict = None) -> dict:
+    """
+    Run the self-correcting improvement loop on a document.
+
+    Smart reuse logic:
+      - If existing_analysis is passed (from Analyze tab session state) and contains
+        raw_text, skips the full analysis pipeline and goes straight to improvement.
+      - If existing_analysis is None or missing raw_text, runs analyze_document() first.
+
+    Args:
+        file_path:         Path to the PDF file.
+        existing_analysis: Result dict from analyze_document() (optional).
+
+    Returns:
+        Dict with final improved text, diff, score, per-iteration history, and metadata.
+    """
+    filename = os.path.basename(file_path)
+    print(f"\n{'='*50}")
+    print(f"Starting improvement loop: {filename}")
+    print(f"{'='*50}")
+
+    if existing_analysis and existing_analysis.get("raw_text"):
+        print("[Improve] Reusing existing analysis from session — skipping re-analysis.")
+        base = existing_analysis
+    else:
+        print("[Improve] No prior analysis found — running full pipeline first.")
+        base = analyze_document(file_path)
+        if base.get("status") == "failed":
+            return {"error": base.get("error", "Analysis failed"), "status": "failed"}
+
+    initial_state = ImprovementState(
+        # Carried over from analysis
+        file_path            = file_path,
+        filename             = filename,
+        raw_text             = base.get("raw_text", base.get("report", "")),
+        summary              = base.get("summary", ""),
+        key_info             = base.get("key_info", ""),
+        risks                = base.get("risks", ""),
+        risk_score           = base.get("risk_score", 50),
+        risk_reasoning       = base.get("risk_reasoning", ""),
+        report               = base.get("report", ""),
+        language             = base.get("language", "English"),
+        suggested_questions  = base.get("suggested_questions", []),
+        status               = base.get("status", "complete"),
+        error                = "",
+        # Improvement-specific
+        doc_type             = "",
+        critique             = "",
+        improved_text        = "",
+        diff_markers         = "",
+        iteration            = 0,
+        improvement_score    = 0,
+        improvement_history  = [],
+        final_text           = "",
+        improvement_status   = "improving"
+    )
+
+    result = improvement_pipeline.invoke(initial_state)
+
+    return {
+        "filename":            result["filename"],
+        "doc_type":            result["doc_type"],
+        "language":            result["language"],
+        "original_text":       result["raw_text"],
+        "final_text":          result["final_text"],
+        "diff_markers":        result.get("diff_markers", ""),
+        "improvement_score":   result["improvement_score"],
+        "total_iterations":    result["iteration"],
+        "improvement_history": result.get("improvement_history", []),
+        "improvement_status":  result["improvement_status"],
+        "error":               result.get("error", "")
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CLI TEST
+# ══════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         result = analyze_document(sys.argv[1])

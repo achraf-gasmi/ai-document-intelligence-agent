@@ -14,11 +14,6 @@ warnings.filterwarnings("ignore")
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2",
-    model_kwargs={"device": "cpu"}
-)
-
 load_dotenv()
 
 # ── LLM & Embeddings ─────────────────────────────────────────────────
@@ -29,7 +24,8 @@ llm = ChatGroq(
 )
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
+    model_kwargs={"device": "cpu"}
 )
 
 # ── ChromaDB ──────────────────────────────────────────────────────────
@@ -113,6 +109,7 @@ def search_document(query: str, filename: str = "") -> str:
     except Exception as e:
         return f"Error searching document: {e}"
 
+
 # ── Tool 4: Summarize text ────────────────────────────────────────────
 @tool
 def summarize_text(text: str, language: str = "English") -> str:
@@ -183,6 +180,7 @@ Risk Analysis:"""
         return response.content.strip()
     except Exception as e:
         return f"Error flagging risks: {e}"
+
 
 # ── Tool 7: Generate report ───────────────────────────────────────────
 @tool
