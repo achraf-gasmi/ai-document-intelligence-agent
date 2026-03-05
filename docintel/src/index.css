@@ -1,0 +1,156 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: 'Syne', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
+
+  --color-base:       #06060e;
+  --color-surface:    #0e0e1a;
+  --color-elevated:   #141422;
+  --color-border:     rgba(255,255,255,0.07);
+  --color-border-hover: rgba(255,255,255,0.14);
+
+  --color-accent:     #6366f1;
+  --color-accent-dim: rgba(99,102,241,0.15);
+  --color-violet:     #8b5cf6;
+  --color-green:      #10b981;
+  --color-green-dim:  rgba(16,185,129,0.12);
+  --color-amber:      #f59e0b;
+  --color-amber-dim:  rgba(245,158,11,0.12);
+  --color-red:        #ef4444;
+  --color-red-dim:    rgba(239,68,68,0.12);
+
+  --color-text:       #f0f2ff;
+  --color-muted:      #7c84a3;
+  --color-faint:      #3a3f5c;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-base);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-faint); border-radius: 4px; }
+
+/* Selection */
+::selection { background: var(--color-accent-dim); color: var(--color-text); }
+
+/* Glass card */
+.glass {
+  background: rgba(14,14,26,0.7);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.glass:hover {
+  border-color: var(--color-border-hover);
+}
+
+/* Animated gradient mesh background */
+.mesh-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 10% 60%, rgba(99,102,241,0.07) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 80% at 90% 20%, rgba(139,92,246,0.07) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 40% at 50% 90%, rgba(16,185,129,0.04) 0%, transparent 50%);
+  animation: meshDrift 20s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes meshDrift {
+  0%   { transform: scale(1)    rotate(0deg); }
+  50%  { transform: scale(1.04) rotate(0.5deg); }
+  100% { transform: scale(1.02) rotate(-0.5deg); }
+}
+
+/* Panel fade-in */
+.panel-enter {
+  animation: panelIn 0.35s cubic-bezier(0.4,0,0.2,1) forwards;
+}
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Pulse glow for active pipeline step */
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 8px  rgba(99,102,241,0.4); }
+  50%       { box-shadow: 0 0 20px rgba(99,102,241,0.9); }
+}
+
+/* Animated dashes on SVG paths */
+@keyframes dashFlow {
+  to { stroke-dashoffset: -40; }
+}
+
+/* Skeleton shimmer */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-elevated) 25%,
+    rgba(255,255,255,0.05) 50%,
+    var(--color-elevated) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s infinite linear;
+  border-radius: 6px;
+}
+
+/* Typewriter cursor */
+.tw-cursor::after {
+  content: '|';
+  animation: blink 0.9s step-end infinite;
+  color: var(--color-accent);
+  margin-left: 1px;
+}
+@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0; } }
+
+/* Diff view */
+.diff-add {
+  display: block;
+  color: var(--color-green);
+  background: var(--color-green-dim);
+  border-left: 3px solid var(--color-green);
+  padding: 2px 8px;
+  margin: 1px 0;
+}
+.diff-rm {
+  display: block;
+  color: var(--color-red);
+  background: var(--color-red-dim);
+  border-left: 3px solid var(--color-red);
+  padding: 2px 8px;
+  margin: 1px 0;
+  text-decoration: line-through;
+  opacity: 0.8;
+}
+.diff-section {
+  display: block;
+  color: var(--color-muted);
+  padding: 8px 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
