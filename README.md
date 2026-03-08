@@ -400,15 +400,6 @@ python src/agents.py path/to/your_document.pdf
 python src/backend.py path/to/your_document.pdf
 ```
 
----
-
-## 🗺️ Roadmap
-
-- [ ] Streamlit Cloud deployment
-- [ ] Batch document processing
-- [ ] Document comparison (upload 2 contracts, compare clause by clause)
-- [ ] Word cloud of most flagged risk terms
-- [ ] Email alerts for high-risk documents
 
 ---
 
