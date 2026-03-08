@@ -64,7 +64,7 @@ export function Sidebar() {
             <div className="text-xs text-slate-500">AI Engineer</div>
           </div>
           <a
-            href="https://www.linkedin.com/in/achrafgasmi-592766134"
+            href="https://www.linkedin.com/in/achraf-gasmi-592766134/"
             target="_blank"
             rel="noopener noreferrer"
             className="text-slate-500 hover:text-indigo-400 transition-colors"

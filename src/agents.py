@@ -539,24 +539,40 @@ def critique_agent(state: ImprovementState) -> ImprovementState:
     base_text        = state.get("improved_text") or state["raw_text"]
     rules            = DOC_TYPE_CRITIQUE_RULES.get(state["doc_type"], DOC_TYPE_CRITIQUE_RULES["Report"])
     text_to_critique = extract_relevant_chunks(base_text, focus_hint="", max_chars=5000)
-    try:
-        prompt = f"""You are an expert {state['doc_type']} reviewer. Iteration {iteration}/3.
 
-Focus on these issues:
+    # Build history context so the critic never re-flags already-fixed issues
+    history          = state.get("improvement_history", [])
+    history_context  = ""
+    if history:
+        history_context = "ISSUES ALREADY FIXED IN PREVIOUS ROUNDS (DO NOT repeat these):\n"
+        for h in history:
+            history_context += f"\nRound {h['iteration']} (score {h['score']}/100):\n"
+            history_context += f"  Fixed: {h['critique'][:300]}\n"
+            history_context += f"  Remaining: {h.get('remaining', 'none')}\n"
+        history_context += "\nFocus ONLY on new or still-unresolved issues.\n"
+
+    try:
+        prompt = f"""You are an expert {state['doc_type']} reviewer. This is iteration {iteration}/3.
+
+{history_context}
+Focus on these issue types:
 {rules}
 
-For EACH problem:
-1. SECTION: which part
-2. PROBLEM: what's wrong (specific)
+For EACH NEW problem found:
+1. SECTION: which part of the document
+2. PROBLEM: what is specifically wrong
 3. SEVERITY: Critical / Major / Minor
-4. FIX: exact instruction
+4. FIX: exact instruction for how to fix it
 
-If already excellent, say "NO ISSUES FOUND".
+IMPORTANT:
+- Do NOT repeat any issue that was already addressed in previous rounds
+- Be progressively stricter each round — round 1 targets Critical, round 2 targets Major, round 3 targets Minor
+- If genuinely no new issues remain, say "NO ISSUES FOUND"
 
-Document:
+Document (iteration {iteration} version):
 {text_to_critique}
 
-Critique:"""
+Critique (new issues only):"""
         response = retry_with_backoff(llm.invoke, prompt)
         critique = response.content.strip()
         print(f"[Critique] Done ({len(critique)} chars)")
@@ -570,25 +586,41 @@ def improvement_agent(state: ImprovementState) -> ImprovementState:
     base_text       = state.get("improved_text") or state["raw_text"]
     improve_rules   = DOC_TYPE_IMPROVE_RULES.get(state["doc_type"], DOC_TYPE_IMPROVE_RULES["Report"])
     text_to_improve = extract_relevant_chunks(base_text, focus_hint=state.get("critique", ""), max_chars=4000)
+
+    # Build cumulative progress summary so the agent knows what's done
+    history         = state.get("improvement_history", [])
+    progress_context = ""
+    if history:
+        last = history[-1]
+        progress_context = f"""PROGRESS SO FAR:
+- Previous score: {last['score']}/100
+- Issues fixed in round {last['iteration']}: {last['critique'][:400]}
+- Still remaining after round {last['iteration']}: {last.get('remaining', 'unknown')}
+
+Build ON TOP of that work. Do not undo previous improvements.
+"""
+
     try:
-        prompt = f"""You are an expert {state['doc_type']} writer. Fix the document based on the critique.
+        prompt = f"""You are an expert {state['doc_type']} writer. This is improvement round {state['iteration']}/3.
 
-Rules: {improve_rules}
+{progress_context}
+Rules for this document type: {improve_rules}
 
-CRITIQUE:
+YOUR TASK — fix ONLY the issues listed in the critique below:
 {state['critique']}
 
 INSTRUCTIONS:
-1. Fix ALL Critical and Major issues
-2. Preserve good structure
+1. Apply fixes for ALL Critical and Major issues in the critique
+2. Do NOT undo or regress any improvement made in a previous round
 3. Language: {state.get('language', 'English')}
-4. Mark changed sections with [IMPROVED]
-5. Output the COMPLETE improved document
+4. Mark every changed sentence or section with [IMPROVED]
+5. Output the COMPLETE document (not just changed parts)
+6. Each round must produce measurably better output than the last
 
-Document:
+Current document (round {state['iteration']} input):
 {text_to_improve}
 
-Improved Document:"""
+Improved Document (round {state['iteration']} output):"""
         response      = retry_with_backoff(llm.invoke, prompt)
         improved_text = response.content.strip()
         diff_markers  = generate_diff_markers(base_text, improved_text)
@@ -615,12 +647,8 @@ def generate_diff_markers(original: str, improved: str) -> str:
 
 def verifier_agent(state: ImprovementState) -> ImprovementState:
     """
-    VERIFIER FIX: uses verifier_llm (temperature=0, adversarial system prompt)
-    instead of the same llm instance used by improvement_agent.
-    Grades independently — won't rubber-stamp its own outputs.
-
-    CHECKPOINTING: state is persisted after every verifier pass via SqliteSaver,
-    so a crash on iteration 2 can be resumed from the last checkpoint.
+    Adversarial verifier (temperature=0). Scores relative to the previous
+    round to guarantee progressive improvement across iterations.
     """
     print(f"\n[Verifier] Round {state['iteration']} (adversarial, t=0)")
     try:
@@ -630,26 +658,39 @@ def verifier_agent(state: ImprovementState) -> ImprovementState:
             max_chars=3000
         )
 
-        # Use messages format to inject adversarial system prompt
+        # Give verifier the full score history so it can score progressively
+        history          = state.get("improvement_history", [])
+        score_history_ctx = ""
+        if history:
+            score_history_ctx = "SCORES FROM PREVIOUS ROUNDS:\n"
+            for h in history:
+                score_history_ctx += f"  Round {h['iteration']}: {h['score']}/100 — {h.get('verdict','')}\n"
+            last_score = history[-1]["score"]
+            score_history_ctx += f"\nThe current round MUST score higher than {last_score} if any issues were fixed.\n"
+            score_history_ctx += "If no meaningful improvements were made, keep the score the same or lower.\n"
+
         from langchain_core.messages import SystemMessage, HumanMessage
         messages = [
             SystemMessage(content=VERIFIER_SYSTEM_PROMPT),
             HumanMessage(content=f"""Score this {state['doc_type']} on quality (0–100).
 
 SCORING GUIDE:
-- 0–30:   Poor — major issues remain
-- 31–60:  Below average — significant problems
-- 61–84:  Acceptable — minor issues remain
+- 0–30:   Poor — major structural or content issues remain
+- 31–60:  Below average — several significant problems present
+- 61–84:  Acceptable — mostly good, minor issues remain
 - 85–100: Excellent — genuinely publication-ready
 
-Critique that was addressed:
-{state['critique'][:500]}
+{score_history_ctx}
+Critique that was addressed this round:
+{state['critique'][:600]}
 
-Document to score:
+Document to score (round {state['iteration']}):
 {text_to_score}
 
+Be precise. Award meaningful score increases ONLY when real improvements are present.
+
 Return ONLY JSON:
-{{"score": 72, "verdict": "...", "remaining_issues": "..."}}
+{{"score": 72, "verdict": "one sentence summary of quality", "remaining_issues": "specific issues still present or none"}}
 
 JSON:""")
         ]
@@ -666,7 +707,6 @@ JSON:""")
 
             print(f"[Verifier] Score: {score}/100 — {verdict}")
 
-            # FIX #2: copy list before appending (no in-place mutation)
             history = list(state.get("improvement_history", []))
             history.append({
                 "iteration":     state["iteration"],

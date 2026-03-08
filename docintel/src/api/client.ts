@@ -65,7 +65,7 @@ export interface Stats {
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 export const API_BASE = 'http://localhost:8000'
-export const MOCK_MODE = true
+export const MOCK_MODE = false
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
