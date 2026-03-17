@@ -1,4 +1,4 @@
-﻿# ── Core LLM & Agents ─────────────────────────────────────────────────
+# ── Core LLM & Agents ─────────────────────────────────────────────────
 langchain==1.2.10
 langchain-core==1.2.14
 langchain-groq==1.1.2
@@ -31,3 +31,8 @@ streamlit==1.54.0
 python-dotenv==1.2.1
 SQLAlchemy==2.0.46
 aiosqlite>=0.17.0
+
+# ── API ───────────────────────────────────────────────────────────────
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
