@@ -253,3 +253,17 @@ def clear_history():
         return {"status": "cleared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear history: {e}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+
+    port = int(os.environ.get("PORT", 10000))
+
+    uvicorn.run(
+        "api:app",
+        host="0.0.0.0",
+        port=port,
+        reload=False
+    )
