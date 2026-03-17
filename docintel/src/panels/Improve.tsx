@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
 import { improveDocument, resumeImprovement } from '../api/client'
 import { useStore } from '../store/useStore'
-import { Card, Badge, GaugeBar, Tabs, Button, getRiskVariant, getRiskColor } from '../components/ui'
+import { Card, Badge, GaugeBar, Tabs, Button, getRiskColor } from '../components/ui'
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 

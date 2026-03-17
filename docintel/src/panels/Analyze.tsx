@@ -219,11 +219,10 @@ export default function Analyze() {
             />
             <Typewriter
               key={activeTab}
-              text={(result as Record<string, string>)[activeTab === 'keyinfo' ? 'key_info' : activeTab] ?? ''}
+              text={((result as unknown) as Record<string, string>)[activeTab === 'keyinfo' ? 'key_info' : activeTab] ?? ''}
               played={typedTabs.has(activeTab)}
               onDone={() => markTabTyped(activeTab)}
-              className="text-sm leading-relaxed"
-              style={{ color: 'rgba(240,242,255,0.85)' } as React.CSSProperties}
+              className="text-sm leading-relaxed text-[rgba(240,242,255,0.85)]"
             />
           </Card>
         </div>

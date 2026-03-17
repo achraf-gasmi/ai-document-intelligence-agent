@@ -72,9 +72,10 @@ interface TypewriterProps {
   played: boolean
   onDone?: () => void
   className?: string
+  style?: React.CSSProperties
 }
 
-export function Typewriter({ text, speed = 8, played, onDone, className = '' }: TypewriterProps) {
+export function Typewriter({ text, speed = 8, played, onDone, className = '', style }: TypewriterProps) {
   const [displayed, setDisplayed] = useState(played ? text : '')
   const [typing, setTyping] = useState(!played)
   const ref = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -106,6 +107,7 @@ export function Typewriter({ text, speed = 8, played, onDone, className = '' }: 
   return (
     <p
       className={`${typing ? 'tw-cursor' : ''} ${className}`}
+      style={style}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   )

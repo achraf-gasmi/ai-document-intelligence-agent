@@ -85,7 +85,7 @@ export default function QA() {
           )}
 
           {/* Chat */}
-          <Card className="flex flex-col" style={{ minHeight: 480 }}>
+          <Card className="flex flex-col min-h-[480px]">
             <div className="flex items-center justify-between mb-4">
               <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--color-muted)' }}>Conversation</span>
               {qaHistory.length > 0 && (
